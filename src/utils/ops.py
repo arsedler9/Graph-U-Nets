@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+from torch.distributions import Independent, Normal, kl_divergence
 
 
 class GraphUnet(nn.Module):
@@ -8,7 +9,10 @@ class GraphUnet(nn.Module):
     def __init__(self, ks, in_dim, out_dim, dim, act, drop_p):
         super(GraphUnet, self).__init__()
         self.ks = ks
-        self.bottom_gcn = GCN(dim, dim, act, drop_p)
+        self.bottom_means_gcn = GCN(dim, dim, nn.Identity(), drop_p)
+        self.bottom_stdvs_gcn = GCN(dim, dim, nn.Identity(), drop_p)
+        self.prior = Independent(Normal(
+            torch.tensor([[0]]).cuda(), torch.tensor([[1]]).cuda()), 1)
         self.down_gcns = nn.ModuleList()
         self.up_gcns = nn.ModuleList()
         self.pools = nn.ModuleList()
@@ -32,7 +36,15 @@ class GraphUnet(nn.Module):
             down_outs.append(h)
             g, h, idx = self.pools[i](g, h)
             indices_list.append(idx)
-        h = self.bottom_gcn(g, h)
+        # TODO: split encoder and decoder
+        # TODO: add KL regularization penalty
+        # TODO: add edge prediction
+        # TODO: switch to brain data
+        means = self.bottom_means_gcn(g, h)
+        stdvs = torch.exp(self.bottom_stdvs_gcn(g, h))
+        posterior = Independent(Normal(means, stdvs), 1)
+        kl = kl_divergence(posterior, self.prior).mean()
+        h = means + torch.randn_like(stdvs) * stdvs
         for i in range(self.l_n):
             up_idx = self.l_n - i - 1
             g, idx = adj_ms[up_idx], indices_list[up_idx]
@@ -42,7 +54,7 @@ class GraphUnet(nn.Module):
             hs.append(h)
         h = h.add(org_h)
         hs.append(h)
-        return hs
+        return hs, kl
 
 
 class GCN(nn.Module):
@@ -94,7 +106,9 @@ def top_k_graph(scores, g, h, k):
     new_h = h[idx, :]
     values = torch.unsqueeze(values, -1)
     new_h = torch.mul(new_h, values)
+    # Go back to an adjacency matrix
     un_g = g.bool().float()
+    # Take 2-step connectivity
     un_g = torch.matmul(un_g, un_g).bool().float()
     un_g = un_g[idx, :]
     un_g = un_g[:, idx]

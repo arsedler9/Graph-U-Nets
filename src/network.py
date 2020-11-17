@@ -19,24 +19,27 @@ class GNet(nn.Module):
         Initializer.weights_init(self)
 
     def forward(self, gs, hs, labels):
-        hs = self.embed(gs, hs)
+        hs, kl = self.embed(gs, hs)
         logits = self.classify(hs)
-        return self.metric(logits, labels)
+        return self.metric(logits, labels), kl
 
     def embed(self, gs, hs):
         o_hs = []
+        o_kl = []
         for g, h in zip(gs, hs):
-            h = self.embed_one(g, h)
+            h, kl = self.embed_one(g, h)
             o_hs.append(h)
+            o_kl.append(kl)
         hs = torch.stack(o_hs, 0)
-        return hs
+        kl = torch.stack(o_kl).mean()
+        return hs, kl
 
     def embed_one(self, g, h):
         g = norm_g(g)
         h = self.s_gcn(g, h)
-        hs = self.g_unet(g, h)
+        hs, kl = self.g_unet(g, h)
         h = self.readout(hs)
-        return h
+        return h, kl
 
     def readout(self, hs):
         h_max = [torch.max(h, 0)[0] for h in hs]
